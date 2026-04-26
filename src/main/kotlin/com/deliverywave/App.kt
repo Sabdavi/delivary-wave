@@ -1,8 +1,12 @@
 package com.deliverywave
 
-fun greeting(name: String): String = "Hello, $name!"
+import org.springframework.boot.autoconfigure.SpringBootApplication
+import org.springframework.boot.runApplication
 
-fun main() {
-    println(greeting("delivery-wave"))
+@SpringBootApplication
+ class ShipmentApp
+
+fun main(args : Array<String>) {
+    runApplication<ShipmentApp>(*args)
 }
 
