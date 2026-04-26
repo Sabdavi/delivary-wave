@@ -59,4 +59,15 @@ class GlobalExceptionHandler {
         val errorMessage = ex.message ?: "Shipment Not found"
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErrorMessage(errorMessage, Instant.now()))
     }
+
+    @ExceptionHandler
+    fun handleShipmentNotReadyException(ex: NotReadyShipmentException) : ResponseEntity<ErrorMessage> {
+        val errorMessage = ex.message ?: "shipments are not in ready state"
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErrorMessage(errorMessage, Instant.now()))
+    }
+
+    @ExceptionHandler
+    fun handleDispatchWaveStateException(ex: DispatchWaveStateException) : ResponseEntity<ErrorMessage> {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErrorMessage(ex.message!!, Instant.now()))
+    }
 }

@@ -4,6 +4,7 @@ import com.deliverywave.entity.DispatchEntity
 import com.deliverywave.entity.ShipmentAssignmentsEntity
 import com.deliverywave.entity.ShipmentEntity
 import com.deliverywave.exception.DatesAreNotValidException
+import com.deliverywave.exception.DispatchWaveStateException
 import com.deliverywave.exception.DuplicateShipmentFoundException
 import com.deliverywave.exception.NotDispatchWaveFoundException
 import com.deliverywave.exception.NotEnoughCapacityException
@@ -41,13 +42,13 @@ class DispatchService(
     }
 
     @Transactional(readOnly = true)
-    open fun getDispatch(waveId: UUID): DispatchWaveResponse {
+    fun getDispatch(waveId: UUID): DispatchWaveResponse {
         val dispatch = findDispatchOrThrow(waveId)
         return dispatch.toResponse()
     }
 
     @Transactional(readOnly = true)
-    open fun getDispatchSummary(waveId: UUID): DispatchWaveSummaryResponse {
+    fun getDispatchSummary(waveId: UUID): DispatchWaveSummaryResponse {
         val dispatch = findDispatchOrThrow(waveId)
         val assignedShipments = dispatch.shipmentAssignments.flatMap { it.shipments }
         val totalAssignedCrates = assignedShipments.sumOf { it.crate }
@@ -64,33 +65,42 @@ class DispatchService(
     }
 
     @Transactional
-    open fun assignShipment(
+    fun assignShipment(
         waveId: UUID,
         shipmentAssignmentRequest: ShipmentAssignmentRequest
     ): ShipmentAssignmentResponse {
 
-        val dispatchWave = findDispatchOrThrow(waveId)
-        val shipmentEntities = shipmentRepository.findAllById(shipmentAssignmentRequest.shipments)
+        // 1. Lock the wave row — no other transaction can modify it until we commit
+        val dispatchWave = findDispatchForUpdateOrThrow(waveId)
+
+        // 2. Lock shipment rows in sorted order — prevents deadlocks
+        val sortedShipmentIds = shipmentAssignmentRequest.shipments.sorted()
+        val shipmentEntities = shipmentRepository.findAllByIdForUpdate(sortedShipmentIds)
+
+        // 3. All validation happens on locked rows — data is guaranteed fresh
+        validateAssignment(dispatchWave, shipmentEntities, shipmentAssignmentRequest.shipments)
+
+        // 4. Safe to mutate — we hold exclusive locks on all relevant rows
         val shipmentAssignmentsEntity =
             ShipmentAssignmentsEntity(assignedAt = Instant.now(), dispatchWave = dispatchWave)
-
-        validateAssignment(dispatchWave, shipmentEntities, shipmentAssignmentRequest.shipments)
         shipmentEntities.forEach { shipmentAssignmentsEntity.addShipment(it) }
-
-        val assignedCapacity = dispatchWave.shipmentAssignments.flatMap { it.shipments }.sumOf { it.crate }
-        val remainingCapacity = dispatchWave.maxCrate - assignedCapacity
-        val requestedCapacity = shipmentEntities.sumOf { it.crate }
+        shipmentEntities.forEach { it.shipmentStatus = ShipmentStatus.ASSIGNED }
 
         shipmentAssignmentRepository.save(shipmentAssignmentsEntity)
 
+        // 5. Calculate remaining capacity
+        val assignedCapacity = dispatchWave.shipmentAssignments.flatMap { it.shipments }.sumOf { it.crate }
+        val remainingCapacity = dispatchWave.maxCrate - assignedCapacity
+        val requestedCapacity = shipmentEntities.sumOf { it.crate }
 
         return ShipmentAssignmentResponse(
             shipmentAssignmentsEntity.id.toString(),
             assignedShipmentIds = shipmentEntities.map { it.id.toString() },
             totalAssignmentShipments = shipmentEntities.size,
-            totalAssignedCrates = shipmentEntities.sumOf { it.crate },
+            totalAssignedCrates = requestedCapacity,
             remainingCapacity = remainingCapacity - requestedCapacity
         )
+        // 6. Transaction commits here — all locks released
     }
 
     private fun validateAssignment(
@@ -99,8 +109,24 @@ class DispatchService(
         shipmentRequestIds: List<UUID>
     ) {
         validateShipmentExistence(shipmentEntities, shipmentRequestIds)
+        validateWaveStatus(dispatchEntity)
+        validateShipmentStatus(shipmentEntities)
         validateCapacity(dispatchEntity, shipmentEntities)
         validateDuplicateShipments(dispatchEntity, shipmentEntities)
+    }
+
+    private fun validateWaveStatus(dispatchEntity: DispatchEntity) {
+        if (dispatchEntity.waveStatus != WaveStatus.PLANNING) {
+            throw DispatchWaveStateException("Wave is not in PLANNING status, current status: ${dispatchEntity.waveStatus}")
+        }
+    }
+
+    private fun validateShipmentStatus(shipmentEntities: List<ShipmentEntity>) {
+        val notReadyShipments = shipmentEntities.filter { it.shipmentStatus != ShipmentStatus.READY }
+        if (notReadyShipments.isNotEmpty()) {
+            val ids = notReadyShipments.map { it.id }.joinToString(", ")
+            throw DuplicateShipmentFoundException("Shipments not in READY status: $ids")
+        }
     }
 
     private fun validateShipmentExistence(
@@ -108,8 +134,8 @@ class DispatchService(
         shipmentRequests: List<UUID>
     ) {
         val existingShipments = shipmentEntities.map { it.id }.toSet()
-        val notExistingShipmentsIds = shipmentRequests.filterNot {it in existingShipments }
-        if(notExistingShipmentsIds.isNotEmpty()) {
+        val notExistingShipmentsIds = shipmentRequests.filterNot { it in existingShipments }
+        if (notExistingShipmentsIds.isNotEmpty()) {
             throw ShipmentNotFoundException("shipments not found $notExistingShipmentsIds")
         }
     }
@@ -121,10 +147,10 @@ class DispatchService(
         val assignedShipments = dispatchEntity.shipmentAssignments.flatMap { it.shipments }.map { it.id }.toSet()
         val requestedAssignments = shipmentEntities.map { it.id }
 
-        val duplicatedShipmentIds = requestedAssignments.filter { assignedShipments.contains(it) }
+        val duplicatedShipmentIds = requestedAssignments.filter { it in assignedShipments }
         if (duplicatedShipmentIds.isNotEmpty()) {
             val duplicateIds = duplicatedShipmentIds.joinToString(", ")
-            throw DuplicateShipmentFoundException("duplicate shipment ids found : $duplicateIds")
+            throw DuplicateShipmentFoundException("duplicate shipment ids found: $duplicateIds")
         }
     }
 
@@ -143,4 +169,8 @@ class DispatchService(
     private fun findDispatchOrThrow(waveId: UUID) =
         dispatchRepository.findById(waveId)
             .orElseThrow { NotDispatchWaveFoundException("Dispatch wave not found: $waveId") }
+
+    private fun findDispatchForUpdateOrThrow(waveId: UUID) =
+        dispatchRepository.findByIdForUpdate(waveId)
+            ?: throw NotDispatchWaveFoundException("Dispatch wave not found: $waveId")
 }
