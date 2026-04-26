@@ -1,6 +1,7 @@
 package com.deliverywave.entity
 
-import com.deliverywave.model.Status
+import com.deliverywave.model.ShipmentStatus
+import com.deliverywave.model.WaveStatus
 import jakarta.persistence.*
 import java.time.Instant
 import java.util.*
@@ -27,7 +28,7 @@ class ShipmentEntity (
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
-    var status: Status = Status.IN_PROGRESS,
+    var shipmentStatus: ShipmentStatus = ShipmentStatus.READY,
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "shipment_assignment_id")

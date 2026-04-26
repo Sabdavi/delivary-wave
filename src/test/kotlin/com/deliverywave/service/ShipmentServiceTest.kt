@@ -2,7 +2,8 @@ package com.deliverywave.service
 
 import com.deliverywave.entity.ShipmentEntity
 import com.deliverywave.model.ShipmentRequest
-import com.deliverywave.model.Status
+import com.deliverywave.model.ShipmentStatus
+import com.deliverywave.model.WaveStatus
 import com.deliverywave.repository.ShipmentRepository
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.BeforeEach
@@ -34,7 +35,7 @@ class ShipmentServiceTest {
             "store-01",
             Instant.now(),
             20,
-            Status.IN_PROGRESS)
+            ShipmentStatus.READY)
 
         val shipmentEntity = ShipmentEntity(
             UUID.randomUUID(),
@@ -42,7 +43,7 @@ class ShipmentServiceTest {
             "store-01",
             Instant.now(),
             20,
-            Status.IN_PROGRESS)
+            ShipmentStatus.READY)
 
         val entityCaptor = argumentCaptor<ShipmentEntity>()
         whenever(shipmentRepository.save(any())).thenReturn(shipmentEntity)
@@ -54,7 +55,7 @@ class ShipmentServiceTest {
         val entity = entityCaptor.firstValue
         assertThat(entity.warehouseId).isEqualTo(shipmentRequest.warehouseId)
         assertThat(entity.storeId).isEqualTo(shipmentRequest.storeId)
-        assertThat(entity.status).isEqualTo(shipmentRequest.status)
+        assertThat(entity.shipmentStatus).isEqualTo(shipmentRequest.shipmentStatus)
         assertThat(entity.plannedDepartureAt).isEqualTo(shipmentRequest.plannedDepartureAt)
         assertThat(entity.id).isNull()
     }

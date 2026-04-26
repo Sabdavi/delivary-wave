@@ -9,7 +9,7 @@ fun ShipmentRequest.toEntity() = ShipmentEntity(
     storeId = storeId,
     plannedDepartureAt = plannedDepartureAt,
     crate = crateCount,
-    status = status,
+    shipmentStatus = shipmentStatus,
 )
 
 fun ShipmentEntity.toResponse() = ShipmentResponse(
@@ -18,5 +18,5 @@ fun ShipmentEntity.toResponse() = ShipmentResponse(
     storeId = storeId,
     plannedDepartureAt = plannedDepartureAt,
     crate = crate,
-    status = status,
+    shipmentStatus = shipmentStatus,
 )

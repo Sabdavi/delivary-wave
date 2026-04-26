@@ -8,5 +8,5 @@ data class ShipmentResponse(
     val storeId: String,
     val plannedDepartureAt: Instant,
     val crate: Int,
-    val status: Status,
+    val shipmentStatus: ShipmentStatus,
 )

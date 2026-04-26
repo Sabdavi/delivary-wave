@@ -15,5 +15,5 @@ data class ShipmentRequest(
     @field: Positive(message = "crateCount is required")
     val crateCount: Int,
     @field: NotNull(message = "status is required")
-    val status: Status,
+    val shipmentStatus: ShipmentStatus,
     )

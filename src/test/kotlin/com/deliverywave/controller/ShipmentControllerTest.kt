@@ -1,7 +1,8 @@
 package com.deliverywave.controller
 
 import com.deliverywave.model.ShipmentResponse
-import com.deliverywave.model.Status
+import com.deliverywave.model.ShipmentStatus
+import com.deliverywave.model.WaveStatus
 import com.deliverywave.service.ShipmentService
 import org.junit.jupiter.api.Test
 import org.mockito.kotlin.any
@@ -33,7 +34,7 @@ class ShipmentControllerTest {
             "store-001",
             Instant.now(),
             20,
-            Status.IN_PROGRESS
+            ShipmentStatus.READY
         )
         whenever(shipmentService.createShipment(any())).thenReturn(shipmentResponse)
 
@@ -45,7 +46,7 @@ class ShipmentControllerTest {
                    "storeId": "STORE-101",
                    "plannedDepartureAt": "2026-04-22T14:30:00Z",
                    "crateCount": 20,
-                   "status": "IN_PROGRESS"
+                   "shipmentStatus": "READY"
                 }
             """.trimIndent()
         }.andExpect {
@@ -56,7 +57,7 @@ class ShipmentControllerTest {
             jsonPath("$.storeId"){equals("STORE-101")}
             jsonPath("$.plannedDepartureAt"){equals("2026-04-22T14:30:00")}
             jsonPath("$.crateCount"){equals(20)}
-            jsonPath("$.status"){equals("IN_PROGRESS")}
+            jsonPath("$.status"){equals("READY")}
         }
     }
 
@@ -70,7 +71,7 @@ class ShipmentControllerTest {
                    "storeId": "STORE-101",
                    "plannedDepartureAt": "2026-04-22T14:30:00Z",
                    "crateCount": 20,
-                   "status": "IN_PROGRESS"
+                   "status": "READY"
                 }
             """.trimIndent()
         }.andExpect {
@@ -90,7 +91,7 @@ class ShipmentControllerTest {
                    "storeId": "STORE-101",
                    "plannedDepartureAt": "2026-04-22T14:30:00Z",
                    "crateCount": 20,
-                   "status": "IN_PROGRESS"
+                   "status": "READY"
                 }
             """.trimIndent()
         }.andExpect {

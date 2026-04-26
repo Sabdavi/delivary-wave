@@ -13,4 +13,7 @@ data class DispatchWaveRequest(
     @field: NotNull(message = "dispatchWindowEnd should not be blank")
     val dispatchWindowEnd : Instant,
     @field: Positive(message = "maxCrate should be positive")
-    val maxCrate: Int )
+    val maxCrate: Int,
+    @field: NotNull(message = "waveStatus should not be null")
+    val waveStatus : WaveStatus
+)

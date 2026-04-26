@@ -1,5 +1,6 @@
 package com.deliverywave.entity
 
+import com.deliverywave.model.WaveStatus
 import jakarta.persistence.*
 import java.time.Instant
 import java.util.*
@@ -23,7 +24,10 @@ class DispatchEntity (
 
     @Column(nullable = false)
     var maxCrate: Int = 0,
-    
+
+    @Column(nullable = false)
+    var waveStatus: WaveStatus = WaveStatus.PLANNING,
+
     @OneToMany(mappedBy = "dispatchWave", cascade = [CascadeType.ALL], orphanRemoval = true)
     var shipmentAssignments : MutableList<ShipmentAssignmentsEntity> = mutableListOf()
 ){
