@@ -1,924 +1,454 @@
-# Dispatch Wave Planning Service — Iteration 1 & 2 Review README
+# Warehouse Dispatch Planning Service — Iterative Practice README
 
-## Purpose of this document
+This README is intended to help evaluate the implementation across the first three iterations of the supply-chain interview exercise.
 
-This README is meant to evaluate the first **two iterations** of the Dispatch Wave Planning Service.
+It documents:
+- the business scope
+- the functional requirements
+- the non-functional concerns introduced per iteration
+- the expected API and domain behavior
+- what must be implemented in each step
 
-- **Iteration 1** focuses on a clean, production-style **synchronous functional core**.
-- **Iteration 2** focuses on **correctness under concurrent access** and on identifying where the Iteration 1 design breaks when multiple planner actions happen at the same time.
-
-This document can be used as:
-- a self-review checklist before an interview
-- a discussion guide during code review
-- a way to explain design choices, known limitations, and the reasoning behind the concurrency changes
-
----
-
-# Business context
-
-The system supports warehouse transport planning.
-
-A planner creates **dispatch waves** for a specific warehouse and dispatch time window, then assigns eligible **shipments** into those waves.
-
-A dispatch wave acts as a planning bucket with limited crate capacity.
-
-A shipment can only be assigned when it satisfies the business rules.
-
-This first pair of iterations focuses on:
-- creating shipments
-- creating dispatch waves
-- assigning shipments to a wave
-- retrieving wave details
-- retrieving wave summary
-- making the assignment flow correct when multiple requests happen concurrently
+It does **not** prescribe a specific implementation approach.
 
 ---
 
-# Iteration 1 — Functional synchronous core
+# 1. Business context
 
-## Scope
+Albert Heijn’s transport planning team needs a backend service to manage outbound warehouse shipments.
 
-### Included
-- REST API design for shipment and dispatch wave flows
-- Request/response DTOs
-- Validation of request fields
-- Domain/business validation during assignment
-- JPA entity modeling
-- Transaction boundary for assignment
-- Structured exception handling
-- Simple summary retrieval
+A planner creates **dispatch waves** for a warehouse and dispatch window, then assigns eligible **shipments** into those waves. In later iterations, the system must also coordinate with an external routing/planning service and remain correct under concurrent planner activity and downstream failures.
 
-### Explicitly out of scope in Iteration 1
-- asynchronous processing
-- external route planning integration
-- retries and backlog processing
-- executor services and worker lifecycle
-- distributed concurrency controls beyond one service instance
-- optimistic/pessimistic locking strategies
-- caching and performance optimization
-- advanced search/list endpoints
-- audit history beyond the minimum entity model
+The exercise is intentionally iterative:
+- first establish a clean functional baseline
+- then make assignment logic correct under concurrency
+- then introduce asynchronous background processing and operational robustness
 
 ---
 
-## Functional requirements
+# 2. Domain concepts
 
-The service should support the following use cases.
+## Shipment
+A shipment represents goods that should leave a specific warehouse and be delivered to a specific store.
 
-### 1. Create shipment
-A shipment represents goods that should be transported from a warehouse to a store.
-
-### 2. Create dispatch wave
-A dispatch wave represents a planning bucket for one warehouse and one dispatch time window.
-
-### 3. Assign shipments to a dispatch wave
-A planner assigns one or more shipments to a wave.
-
-### 4. Read dispatch wave details
-The client can retrieve a wave and inspect its configuration and assigned shipments.
-
-### 5. Read dispatch wave summary
-The client can retrieve business-oriented summary data for a wave.
-
----
-
-## Business rules
-
-The following rules should be enforced during shipment assignment:
-
-1. Only shipments in `READY` status can be assigned.
-2. Shipment warehouse must match dispatch wave warehouse.
-3. A shipment can belong to at most one active wave.
-4. A dispatch wave has a maximum crate capacity.
-5. Assignment must fail if requested shipments would exceed the wave capacity.
-6. Assignment is only allowed when wave status is `PLANNING`.
-
----
-
-## API design
-
-### Shipment endpoints
-
-#### `POST /shipments`
-Creates a shipment.
-
-Example request:
-
-```json
-{
-  "warehouseId": "WH-AMS-1",
-  "storeId": "STORE-101",
-  "plannedDepartureAt": "2026-04-22T14:30:00",
-  "crateCount": 20,
-  "status": "READY"
-}
-```
-
-Example response:
-
-```json
-{
-  "id": "a1f5d4d2-2ec0-4d6f-9d89-5a6a4f1b2c11",
-  "warehouseId": "WH-AMS-1",
-  "storeId": "STORE-101",
-  "plannedDepartureAt": "2026-04-22T14:30:00",
-  "crateCount": 20,
-  "status": "READY",
-  "createdAt": "2026-04-22T10:15:00"
-}
-```
-
-### Dispatch wave endpoints
-
-#### `POST /dispatch-waves`
-Creates a new dispatch wave.
-
-Example request:
-
-```json
-{
-  "warehouseId": "WH-AMS-1",
-  "dispatchWindowStart": "2026-04-22T14:00:00",
-  "dispatchWindowEnd": "2026-04-22T15:00:00",
-  "maxCrates": 100
-}
-```
-
-Example response:
-
-```json
-{
-  "id": "b5d4c1aa-1c33-4b11-8b4a-99d6fbc0d765",
-  "warehouseId": "WH-AMS-1",
-  "dispatchWindowStart": "2026-04-22T14:00:00",
-  "dispatchWindowEnd": "2026-04-22T15:00:00",
-  "maxCrates": 100,
-  "status": "PLANNING",
-  "createdAt": "2026-04-22T10:20:00"
-}
-```
-
-#### `POST /dispatch-waves/{waveId}/assignments`
-Assigns one or more shipments to a specific dispatch wave.
-
-Example request:
-
-```json
-{
-  "shipmentIds": [
-    "a1f5d4d2-2ec0-4d6f-9d89-5a6a4f1b2c11",
-    "b7a9d2e3-6fa0-4b6a-a2c2-8bc9d92ad901"
-  ]
-}
-```
-
-Example response:
-
-```json
-{
-  "waveId": "b5d4c1aa-1c33-4b11-8b4a-99d6fbc0d765",
-  "assignedShipmentIds": [
-    "a1f5d4d2-2ec0-4d6f-9d89-5a6a4f1b2c11",
-    "b7a9d2e3-6fa0-4b6a-a2c2-8bc9d92ad901"
-  ],
-  "totalAssignedShipments": 2,
-  "totalAssignedCrates": 50,
-  "remainingCapacity": 50
-}
-```
-
-#### `GET /dispatch-waves/{waveId}`
-Returns dispatch wave details.
-
-#### `GET /dispatch-waves/{waveId}/summary`
-Returns business summary for the wave.
-
----
-
-## Controller design
-
-A simple and clean controller split for this iteration is:
-
-### `ShipmentController`
-Responsible for shipment endpoints:
-- `POST /shipments`
-
-### `DispatchWaveController`
-Responsible for wave-related endpoints:
-- `POST /dispatch-waves`
-- `POST /dispatch-waves/{waveId}/assignments`
-- `GET /dispatch-waves/{waveId}`
-- `GET /dispatch-waves/{waveId}/summary`
-
-This keeps controllers small while preserving a resource-oriented API structure.
-
----
-
-## Domain model
-
-### Shipment
-Represents goods to be sent from a warehouse to a store.
-
-Suggested fields:
+Expected business fields:
 - `id`
 - `warehouseId`
 - `storeId`
 - `plannedDepartureAt`
 - `crateCount`
 - `status`
-- `createdAt`
-- `updatedAt`
+- audit fields as needed
 
-Suggested status values:
+Expected shipment statuses:
 - `CREATED`
 - `READY`
 - `ASSIGNED`
 - `DISPATCHED`
 - `CANCELLED`
 
-### DispatchWave
-Represents a planning bucket for one warehouse and one dispatch time window.
+## DispatchWave
+A dispatch wave represents a planning bucket for one warehouse and one dispatch time window.
 
-Suggested fields:
+Expected business fields:
 - `id`
 - `warehouseId`
 - `dispatchWindowStart`
 - `dispatchWindowEnd`
 - `maxCrates`
 - `status`
-- `createdAt`
-- `updatedAt`
+- audit fields as needed
 
-Suggested status values:
+Expected wave statuses:
 - `PLANNING`
 - `LOCKED`
 - `DISPATCHED`
+- `CANCELLED`
 
-### Assignment
-Represents the link between a shipment and a dispatch wave.
+## Assignment
+An assignment represents that a shipment has been placed into a dispatch wave.
 
-Suggested fields:
+Expected business fields:
 - `id`
 - `shipmentId`
 - `waveId`
 - `assignedAt`
+- audit fields as needed
 
 ---
 
-## Why `warehouseId` exists on both Shipment and DispatchWave
+# 3. Iteration 1 — Functional core
 
-This is intentional and business-driven.
+## Goal
+Build a clean synchronous service that supports the basic dispatch planning flow.
 
-### On Shipment
-A shipment originates from a specific warehouse independently of any assignment. It may exist before any wave is created.
+## Required endpoints
+- `POST /shipments`
+- `POST /dispatch-waves`
+- `POST /dispatch-waves/{waveId}/assignments`
+- `GET /dispatch-waves/{waveId}`
+- `GET /dispatch-waves/{waveId}/summary`
 
-### On DispatchWave
-A dispatch wave belongs to a specific warehouse and exists before any shipment is assigned.
+## Required business rules
+- only shipments in `READY` status can be assigned
+- shipment and dispatch wave must belong to the same warehouse
+- a shipment can belong to at most one active wave
+- a wave has a maximum crate capacity
+- assignment must fail if the capacity would be exceeded
+- assignment is allowed only while the wave is in `PLANNING`
 
-### Why this is useful
-It makes the assignment rule explicit and easy to validate:
+## What must be implemented
 
-- `shipment.warehouseId == dispatchWave.warehouseId`
+### API design
+- define request/response DTOs for shipment creation, wave creation, shipment assignment, wave details, and wave summary
+- keep controller responsibilities clear and focused
+- ensure API paths reflect the resource structure
 
-It also supports clear querying and avoids ambiguous designs where warehouse must be inferred indirectly.
+### Validation
+- validate request payloads at the API boundary
+- validate business rules during assignment
+- ensure invalid wave windows, invalid crate counts, empty assignment requests, and unsupported state transitions are rejected
 
----
+### Domain modeling
+- model the core domain objects required for shipment planning
+- represent the relationship between shipments and dispatch waves
+- keep business-relevant fields explicit in the model
 
-## Entity modeling choice: separate `Assignment` entity
+### Persistence
+- persist shipments, waves, and assignments in a relational database
+- maintain data integrity between related records
+- ensure the persisted model can support later iterations
 
-For this iteration, a separate `Assignment` entity is preferred over storing `waveId` directly on `Shipment`.
+### Transactional behavior
+- ensure assignment is executed atomically
+- ensure all changes needed for a successful assignment succeed or fail together
 
-### Reasons
-- clearer domain modeling
-- explicit relationship between shipment and wave
-- easier future extension for audit/history
-- easier to enrich later with assignment-specific metadata
-- better separation between shipment lifecycle and planning relationship
+### Error handling
+- expose clear API errors for validation failures, missing resources, invalid states, warehouse mismatches, duplicate assignment attempts, and capacity violations
+- use a consistent error response format
 
-### Alternative considered
-A simpler design is to add `waveId` directly to `Shipment`. That works for a minimal version but couples shipment state too tightly to the current wave relationship and leaves less room for future evolution.
+## Acceptance criteria
+- shipments can be created successfully
+- dispatch waves can be created successfully
+- eligible shipments can be assigned to a valid wave
+- invalid shipments are rejected for the right business reasons
+- capacity violations are rejected
+- wave summary returns correct totals
+- implementation is understandable, maintainable, and reviewable
 
----
-
-## DTO design
-
-Entities should not be exposed directly through the API.
-
-Suggested DTOs for this iteration:
-
-### Request DTOs
-- `CreateShipmentRequest`
-- `CreateDispatchWaveRequest`
-- `AssignShipmentsRequest`
-
-### Response DTOs
-- `ShipmentResponse`
-- `DispatchWaveResponse`
-- `DispatchWaveDetailsResponse`
-- `DispatchWaveSummaryResponse`
-- `WaveAssignmentResponse`
-
-This separation helps keep persistence concerns out of the API surface.
-
----
-
-## Validation design
-
-Validation should happen on two levels.
-
-### 1. Request validation
-Use bean validation for structural and field-level validation.
-
-Examples:
-- `warehouseId` not blank
-- `storeId` not blank
-- `plannedDepartureAt` not null
-- `crateCount` positive
-- `dispatchWindowStart` not null
-- `dispatchWindowEnd` not null
-- `maxCrates` positive
-- `shipmentIds` not empty
-
-A custom validation can be used to ensure:
-- `dispatchWindowStart < dispatchWindowEnd`
-
-### 2. Business validation
-These checks belong in the service layer during assignment.
-
-Examples:
-- wave exists
-- all shipments exist
-- wave status is `PLANNING`
-- shipment status is `READY`
-- shipment warehouse matches wave warehouse
-- shipment is not already assigned
-- total assigned crates does not exceed wave capacity
+## Evaluation focus
+- resource design
+- DTO design
+- validation completeness
+- service boundaries
+- transaction boundary
+- entity modeling
+- exception handling
 
 ---
 
-## Service boundaries
+# 4. Iteration 2 — Concurrency and correctness
 
-A simple service split for this iteration could be:
+## Goal
+Keep the same functional behavior from Iteration 1, but make the assignment flow correct under concurrent planner activity.
 
-### `ShipmentService`
-- create shipment
-- optionally retrieve shipment data needed by assignment flow
+## Additional problem context
+Multiple planners or system processes may attempt assignment at the same time.
 
-### `DispatchWaveService`
-- create dispatch wave
-- get wave details
-- get wave summary
-- assign shipments to wave
+The implementation must remain correct when concurrent requests target:
+- the same shipment
+- the same wave
+- overlapping shipment sets
+- a wave whose status changes while assignment is in progress
+- shipments whose status changes while assignment is in progress
 
-An alternative is to move assignment into a dedicated `WaveAssignmentService` if the assignment logic grows. For the first iteration, keeping it inside `DispatchWaveService` is acceptable if the class remains focused and readable.
+## Required correctness guarantees
+- one shipment must not end up assigned to multiple active waves
+- wave capacity must not be exceeded due to concurrent assignment requests
+- assignment must not succeed when shipment or wave state becomes invalid during processing
+- business invariants must remain correct even under simultaneous requests
 
----
+## What must be implemented
 
-## Transaction boundary
+### Concurrency-aware assignment handling
+- review the Iteration 1 assignment flow and identify race conditions
+- ensure the assignment use case remains correct when invoked concurrently
+- ensure the correctness of validation and persistence under concurrent access
 
-The assignment use case should be executed within a single transaction.
+### Persistence integrity
+- ensure database-level integrity supports the business rules
+- ensure duplicate assignment attempts cannot silently corrupt the state
+- ensure conflicting concurrent writes are handled deterministically
 
-Suggested transactional method:
+### Transactional correctness
+- revisit the transaction boundary for assignment
+- ensure the transaction semantics are sufficient for concurrent execution
+- ensure the implementation does not rely on assumptions valid only in single-threaded execution
 
-- `assignShipmentsToWave(waveId, shipmentIds)`
+### Error handling under contention
+- define how the API behaves when a request loses a race with another request
+- ensure clients receive a clear and consistent error response for concurrency conflicts
 
-### Why this should be atomic
-The following operations belong together:
-- load and validate the wave
-- load and validate the shipments
-- calculate requested capacity
-- create assignment records
-- update shipment statuses
+### Testing
+- add tests that simulate concurrent assignment attempts
+- verify that correctness guarantees hold under race conditions
+- verify that wave capacity and shipment uniqueness constraints remain protected
 
-If any validation or persistence step fails, the entire assignment should roll back.
+## Acceptance criteria
+- two concurrent requests cannot assign the same shipment twice
+- overlapping concurrent requests cannot cause capacity oversubscription
+- concurrent conflicts are visible and testable
+- implementation remains understandable and production-oriented
 
-The controller should not own transactional behavior. The transaction boundary should be in the service layer.
-
----
-
-## Exception handling
-
-The implementation should expose structured, predictable API errors.
-
-Suggested exception types:
-- `ShipmentNotFoundException`
-- `DispatchWaveNotFoundException`
-- `InvalidShipmentStateException`
-- `InvalidWaveStateException`
-- `WarehouseMismatchException`
-- `ShipmentAlreadyAssignedException`
-- `WaveCapacityExceededException`
-
-A global exception handler should map these into stable HTTP responses.
-
-Suggested error response shape:
-
-```json
-{
-  "timestamp": "2026-04-22T10:25:00Z",
-  "status": 400,
-  "errorCode": "WAVE_CAPACITY_EXCEEDED",
-  "message": "Assignment exceeds dispatch wave capacity",
-  "path": "/dispatch-waves/123/assignments"
-}
-```
+## Evaluation focus
+- race-condition awareness
+- transaction correctness
+- persistence integrity
+- API behavior for conflicts
+- concurrency testing quality
 
 ---
 
-## Suggested persistence constraints
-
-Useful database constraints for this iteration include:
-- primary keys on all entities
-- non-null constraints on required fields
-- positive numeric constraints where applicable
-- a unique constraint on `assignment.shipment_id` if one shipment can belong to only one active assignment in this iteration
-
-Note that more advanced modeling of active vs historical assignments can be introduced later if the business evolves.
-
----
-
-## Summary calculation
-
-The summary endpoint should return:
-- total number of assigned shipments
-- total assigned crates
-- remaining capacity
-
-This can be implemented either:
-- by computing from assignments on read, or
-- by maintaining derived totals
-
-For Iteration 1, computing on read is acceptable because the focus is correctness and clarity rather than optimization.
-
----
-
-## Suggested package structure
-
-One clean option:
-
-```text
-controller/
-  ShipmentController
-  DispatchWaveController
-
-dto/
-  request/
-  response/
-
-entity/
-  ShipmentEntity
-  DispatchWaveEntity
-  AssignmentEntity
-
-repository/
-  ShipmentRepository
-  DispatchWaveRepository
-  AssignmentRepository
-
-service/
-  ShipmentService
-  DispatchWaveService
-
-exception/
-  ...
-
-mapper/
-  ...
-```
-
-The exact structure can vary, but responsibilities should remain clear.
-
----
-
-## Iteration 1 self-review checklist
-
-A good Iteration 1 implementation should satisfy most of the following:
-
-- Controllers are resource-oriented and not overloaded.
-- Entities reflect the business language.
-- DTOs are separated from entities.
-- Bean validation is used for request shape validation.
-- Business rules are enforced in the service layer.
-- Assignment runs in one transaction.
-- API errors are structured and consistent.
-- The model is simple, but not overly coupled.
-- The design leaves room for a future concurrency-safe implementation.
-
----
-
-# Iteration 2 — Concurrency and correctness under concurrent planner actions
-
-## Why Iteration 2 exists
-
-The Iteration 1 design is functionally correct in the normal case, but it is still vulnerable when multiple requests happen at the same time.
-
-This iteration exists to answer one question:
-
-> How do we prevent invalid assignments when planners or systems submit conflicting requests concurrently?
-
-This is the first place where your backend design starts to look senior-level, because now you must think beyond “does it work?” and move into “does it stay correct under contention?”
-
----
-
-## Concurrency scenarios you must handle
-
-### Scenario A — same shipment assigned to two different waves
-Two planners send requests at almost the same time:
-- request 1 assigns shipment `S1` to wave `W1`
-- request 2 assigns shipment `S1` to wave `W2`
-
-Naive risk:
-- both requests read `S1` as `READY`
-- both see no assignment yet
-- both insert an assignment
-- shipment is double-booked
-
-### Scenario B — same wave over capacity
-Two planners assign shipments to the same wave concurrently:
-- wave capacity is `100`
-- request 1 assigns `40` crates
-- request 2 assigns `70` crates
-- both read current assigned crates as `0`
-- both succeed
-- final total becomes `110`
-
-Naive risk:
-- capacity is checked on stale state
-- application-level validation alone is not sufficient
-
-### Scenario C — wave state changes during assignment
-One request is assigning shipments while another request locks or dispatches the wave.
-
-Naive risk:
-- the assignment flow starts when wave is `PLANNING`
-- before commit, another transaction changes it to `LOCKED`
-- depending on transaction design, invalid state transitions may slip through
-
-### Scenario D — shipment state changes during assignment
-A shipment is read as `READY`, but another transaction cancels or dispatches it before the first transaction commits.
-
-Naive risk:
-- final state may violate business invariants
-
----
-
-## What you are going to do in Iteration 2
-
-Iteration 2 is **not** about adding new business features. It is about making the existing assignment flow safe.
-
-You are going to:
-
-1. **Identify where Iteration 1 breaks under concurrency**
-   - especially the check-then-act pattern
-   - especially “read current state, then validate, then write” logic
-
-2. **Choose a concurrency control strategy**
-   - optimistic locking
-   - pessimistic locking
-   - database constraints
-   - or a combination of them
-
-3. **Move critical invariants closer to the database where needed**
-   - because `synchronized` only protects a single JVM instance
-   - and plain service-layer checks are not enough under concurrent transactions
-
-4. **Adjust the transaction design**
-   - decide which entities must be locked
-   - decide in what order they should be read and locked
-   - avoid race conditions without introducing unnecessary contention
-
-5. **Design the API behavior for concurrency failures**
-   - what HTTP status to return
-   - how to make failures understandable to clients
-   - whether clients can safely retry
-
-6. **Add concurrency-focused tests**
-   - not just unit tests, but tests that reveal race conditions or locking problems
-
----
-
-## Key lesson of Iteration 2
-
-This iteration teaches an important backend principle:
-
-> Validation in Java code is necessary, but it is not sufficient when multiple transactions can observe and update the same rows concurrently.
-
-A senior implementation uses the database and transaction model as part of the correctness strategy.
-
----
-
-## What is likely unsafe in the Iteration 1 version
-
-The following patterns are likely unsafe if implemented naively:
-
-### 1. Read wave, calculate remaining capacity, then write
-Unsafe because another transaction may assign more shipments before the current transaction commits.
-
-### 2. Check `shipment.status == READY`, then create assignment
-Unsafe because another transaction may assign or update the shipment first.
-
-### 3. Check “assignment does not exist”, then insert
-Unsafe because another transaction may insert the same assignment between the check and the insert.
-
-### 4. Using `synchronized` in the service layer as the main protection
-Unsafe because:
-- it only protects one JVM instance
-- it does not help if the service is scaled horizontally
-- it does not coordinate with the database transaction state
-
-You may still discuss local locking as a temporary educational mechanism, but not as the final production answer.
-
----
-
-## Concurrency strategy options
-
-You should be able to discuss the trade-offs of three common strategies.
-
-### Option 1 — Optimistic locking
-Add a `@Version` field to entities such as:
+# 5. Iteration 3 — Background route preparation and operational robustness
+
+## Goal
+After shipments have been assigned to a wave, the system must support asynchronous background route preparation for **one dispatch wave at a time**.
+
+In this exercise, the route-preparation model is:
+- one dispatch wave is the unit of triggering
+- one dispatch wave belongs to one warehouse
+- one dispatch wave may contain shipments for multiple stores
+- route preparation runs for that single wave
+- the result of route preparation may later represent one or more executable delivery routes, but this iteration focuses on wave-level preparation tracking
+
+## Business context
+Once a dispatch wave has been planned and is no longer open for further changes, the system must be able to request route preparation for that wave.
+
+Route preparation is the operational step that takes the warehouse-scoped wave and starts the process of turning its assigned shipments into a feasible delivery plan.
+
+For this iteration, route preparation is treated as:
+- background work
+- dependent on an external downstream service
+- potentially slow
+- potentially failure-prone
+- observable through application state
+
+## Scope of this iteration
+This iteration introduces asynchronous workflow handling and application lifecycle concerns beyond the synchronous request/response path.
+
+The system now needs to deal with:
+- asynchronous execution
+- bounded work intake
+- retryable downstream failure
+- pending backlog
+- running work
+- completed work
+- failed work
+- shutdown behavior
+- restart expectations
+
+## High-level model additions
+
+### Route preparation request model
+The implementation must introduce a wave-level concept that represents that route preparation has been requested for a given dispatch wave.
+
+Expected business data to track at the application level:
+- target `waveId`
+- route-preparation status
+- timestamps relevant to request/start/completion/failure as needed
+- failure details or failure reason as needed
+- retry-related metadata as needed
+
+This may be represented through:
+- fields added to the existing dispatch wave model
+- a separate route-preparation tracking model
+- or another explicit persistence model
+
+The implementation choice is open, but the application must clearly represent route-preparation state.
+
+### Route preparation statuses
+The application must define statuses for the wave-level route-preparation lifecycle.
+
+Expected route-preparation statuses:
+- `PENDING`
+- `IN_PROGRESS`
+- `COMPLETED`
+- `FAILED`
+
+The implementation must make these states visible and meaningful for both application logic and API responses.
+
+### Relationship to existing models
+- a `DispatchWave` still belongs to one warehouse
+- a `DispatchWave` still contains shipments assigned from that same warehouse
+- route preparation is triggered **per dispatch wave**
+- the route-preparation lifecycle must remain consistent with wave lifecycle and shipment lifecycle
+
+## Status expectations in this iteration
+
+### Shipment status expectations
+Shipment statuses remain part of the model and continue to reflect shipment planning/execution state.
+
+Expected shipment statuses:
+- `CREATED`
+- `READY`
+- `ASSIGNED`
+- `DISPATCHED`
+- `CANCELLED`
+
+### Dispatch wave status expectations
+Dispatch wave statuses remain part of the model and continue to reflect the wave lifecycle.
+
+Expected wave statuses:
+- `PLANNING`
+- `LOCKED`
+- `DISPATCHED`
+- `CANCELLED`
+
+### Route-preparation status expectations
+Route-preparation status is a separate workflow concern and must be tracked explicitly.
+
+Expected route-preparation statuses:
+- `PENDING`
+- `IN_PROGRESS`
+- `COMPLETED`
+- `FAILED`
+
+## Required endpoint additions
+The system must introduce API support for route preparation at wave level.
+
+Expected endpoint scope:
+- an endpoint to trigger route preparation for a specific dispatch wave
+- an endpoint to retrieve route-preparation state for a specific dispatch wave, or otherwise expose that state through an existing wave endpoint
+
+Expected endpoint direction:
+- route preparation should be requested in the context of a specific wave
+- the API should make it clear that route preparation is not requested across multiple waves in this version
+
+## Triggering requirements
+- route preparation must be requestable only for an eligible dispatch wave
+- triggering route preparation must not require the HTTP caller to wait for downstream completion inline
+- once triggered, the application must persist or otherwise reliably represent that the work has been requested
+- duplicate or conflicting route-preparation requests must be handled consistently
+
+## Eligibility requirements
+The implementation must define and enforce eligibility rules for route preparation.
+
+At minimum, eligibility must consider:
+- the current dispatch wave status
+- whether the wave has assigned shipments
+- whether route preparation has already been requested, is already running, or has already completed
+- whether the wave is cancelled or otherwise no longer processable
+
+## Background-processing requirements
+- route-preparation work must execute outside the main request thread
+- the application must distinguish between accepted work and finished work
+- the application must define how many route-preparation tasks can be active or pending at a time
+- the implementation must prevent the system from behaving as though background capacity is unlimited
+
+## Downstream integration requirements
+- route preparation depends on a downstream external service
+- downstream communication may be slow or fail
+- the application must define what kinds of downstream failures are retryable
+- the application must define what constitutes a terminal failure
+- the application must record the observable outcome of downstream processing
+
+## Retry and backlog requirements
+- work that cannot be completed immediately must not be silently dropped
+- retryable failures must remain visible in application state
+- the implementation must track whether work is pending retry, running, completed, or failed
+- the application must define when repeated failure becomes final failure
+
+## Shutdown and restart requirements
+The implementation must define expected behavior for both running and pending background route-preparation work.
+
+At minimum, it must be clear:
+- what happens to currently running work during application shutdown
+- what happens to work that has been accepted but not yet started
+- what application state remains after restart
+- what manual or automatic recovery behavior is expected after restart
+
+## Error-handling requirements
+- the API must provide clear responses when route preparation cannot be requested
+- invalid wave state, duplicate request attempts, missing waves, and other business violations must be distinguishable
+- failures during background execution must be visible through processing state rather than hidden behind the original trigger request
+
+## Testing requirements
+The implementation must add tests covering the route-preparation workflow.
+
+At minimum, tests should verify:
+- route preparation can be requested for an eligible wave
+- ineligible waves are rejected correctly
+- background processing changes route-preparation state correctly
+- retryable and terminal failures are reflected correctly
+- accepted work is not lost silently
+- shutdown/restart expectations are documented and testable where practical
+
+## Acceptance criteria
+- route preparation can be triggered for a single eligible dispatch wave
+- the request returns without waiting for all downstream processing to complete inline
+- the application exposes route-preparation state clearly
+- background work has bounded and observable lifecycle behavior
+- downstream failure scenarios are visible and handled consistently
+- implementation remains understandable, maintainable, and reviewable
+
+## Evaluation focus
+- clarity of wave-level route-preparation model
+- consistency of statuses across planning and background processing
+- API clarity for triggering and observing route preparation
+- reliability of background workflow handling
+- visibility of failure and backlog state
+- quality of tests and operational reasoning
+
+
+## Step 3 — Entity requirements
+
+The implementation for this step must make the persistence requirements explicit. The goal of this step is not only to trigger background route preparation, but also to persist enough state so the workflow is observable, recoverable, and testable.
+
+### Existing entities still in scope
+The following entities remain part of the model and continue to participate in validation and workflow transitions:
+- `Shipment`
 - `DispatchWave`
-- possibly `Shipment`
-
-Behavior:
-- both transactions can read the same row
-- at update time, one succeeds and one fails with an optimistic locking conflict
-
-Benefits:
-- low lock contention
-- good when conflicts are relatively rare
-- simpler to scale in many read-heavy systems
-
-Costs:
-- conflicts show up late, at commit/update time
-- retry logic may be needed
-- harder if multiple rows participate in one invariant
-
-Where it may fit here:
-- protecting wave state updates
-- protecting aggregate-level counters if they are stored on the wave
-
-### Option 2 — Pessimistic locking
-Use repository queries with `PESSIMISTIC_WRITE` for rows that must not be modified concurrently.
-
-Candidates:
-- load `DispatchWave` with a write lock during assignment
-- load target `Shipment` rows with write locks as part of the same transaction
-
-Benefits:
-- easier to reason about for strict correctness
-- prevents concurrent modification while the transaction is in progress
-
-Costs:
-- more lock contention
-- slower under high concurrency
-- risk of deadlocks if lock acquisition order is inconsistent
-
-Where it may fit here:
-- assignment flow when correctness matters more than throughput
-- especially in a planning system where conflicts are possible and data integrity is more important than maximal parallelism
-
-### Option 3 — Database constraints plus transaction handling
-Examples:
-- unique constraint on `assignment.shipment_id`
-- check constraints if applicable
-- foreign keys and non-null constraints
-
-Benefits:
-- strongest final guardrail
-- catches race conditions even if application logic misses them
-
-Costs:
-- exception-driven control flow if relied on too heavily
-- may need careful mapping of DB exceptions into business errors
-
-Where it fits here:
-- as a mandatory safety net, regardless of optimistic or pessimistic locking choice
-
----
-
-## Recommended direction for this scenario
-
-For interview discussion, a strong answer is usually:
-
-- use **database constraints as the final guardrail**
-- use **transactional locking for the wave and relevant shipments** in the assignment flow
-- keep the lock acquisition order stable
-- optionally use **optimistic locking** where contention is lower or where aggregate updates are simpler to detect and retry
-
-A practical iteration-2 solution for this scenario is:
-
-1. lock the target wave row for update
-2. lock the shipment rows being assigned, always in a stable order
-3. validate status, warehouse, and wave state inside the same transaction
-4. rely on a unique assignment constraint to prevent double-booking as a last line of defense
-5. map concurrency failures to clear API responses
-
-This is usually easier to justify than a purely optimistic strategy for a planning assignment flow.
-
----
-
-## Entity and persistence changes for Iteration 2
-
-### Add `@Version` where appropriate
-Candidates:
-- `DispatchWaveEntity`
-- possibly `ShipmentEntity`
-
-Even if you choose pessimistic locking, discussing versioning shows good modeling awareness.
-
-### Add or verify database constraints
-Recommended:
-- unique constraint on `assignment.shipment_id`
-- foreign keys from assignment to shipment and wave
-- non-null constraints on fields used in invariants
-
-### Consider storing derived counters on the wave
-Optional in Iteration 2:
-- `assignedCrates`
-- `assignedShipmentCount`
-
-This can make capacity checks more explicit, but it also introduces another concurrency-sensitive field.
-
-For simplicity, you may still compute totals from assignments, but if you choose to store counters, you must explain how they stay consistent under concurrent updates.
-
----
-
-## Service-layer changes for Iteration 2
-
-The assignment service is the main focus.
-
-A stronger Iteration 2 assignment flow would look like this conceptually:
-
-1. Start transaction
-2. Load and lock `DispatchWave`
-3. Fail if wave is not `PLANNING`
-4. Load and lock target shipments in deterministic order
-5. Verify all shipments exist
-6. Verify all shipments are `READY`
-7. Verify all shipment warehouses match the wave warehouse
-8. Verify shipments are not already assigned
-9. Recalculate capacity inside the same transaction and fail if exceeded
-10. Persist assignment rows
-11. Update shipment statuses to `ASSIGNED`
-12. Commit transaction
-
-The important difference from Iteration 1 is not the steps themselves, but that they now happen with a concurrency-aware persistence strategy.
-
----
-
-## Lock ordering and deadlock prevention
-
-If you use pessimistic locking, explain how you avoid deadlocks.
-
-A good answer is:
-- always lock wave first
-- then lock shipments in sorted ID order
-
-This reduces the chance that two transactions lock rows in opposite order.
-
-This kind of detail is exactly the sort of thing a senior interviewer may ask.
-
----
-
-## Why `synchronized` is not enough
-
-A common interview trap is to propose `synchronized` on the service method.
-
-Why that is not enough:
-- it only protects a single process
-- it breaks once there are multiple service instances
-- it does not coordinate with the database transaction model
-- it cannot protect direct database modifications from other paths
-
-A good answer is:
-
-> `synchronized` may prevent some race conditions in a single-node demo, but the durable correctness boundary for this use case has to be the transaction and database constraints, because the service may scale horizontally and multiple transactions can still conflict at the database level.
-
----
-
-## API behavior for concurrency conflicts
-
-You should define how the API behaves when concurrent conflicts occur.
-
-Possible mappings:
-- `409 Conflict` for shipment already assigned, optimistic locking conflict, or wave no longer assignable
-- `400 Bad Request` for pure business rule violations that are not concurrency-driven
-- `404 Not Found` when requested wave or shipment does not exist
-
-Recommended error examples:
-- `SHIPMENT_ALREADY_ASSIGNED`
-- `WAVE_CAPACITY_EXCEEDED`
-- `WAVE_STATE_CONFLICT`
-- `OPTIMISTIC_LOCK_CONFLICT`
-
-The point is not the exact code names, but consistency and clarity.
-
----
-
-## Testing expectations for Iteration 2
-
-Iteration 2 needs stronger tests than Iteration 1.
-
-### Unit tests
-Still useful for:
-- validation rules
-- error mapping
-- service branching logic
-
-### Integration tests
-Important for:
-- repository locking behavior
-- transaction boundaries
-- constraint enforcement
-- actual JPA/database interaction
-
-### Concurrency-focused tests
-Examples:
-
-#### Test 1 — duplicate assignment race
-- create one shipment in `READY`
-- create two waves in same warehouse
-- run two concurrent assignment attempts for the same shipment
-- verify only one succeeds
-
-#### Test 2 — capacity oversubscription race
-- create one wave with capacity 100
-- run two concurrent requests that individually fit but together exceed capacity
-- verify only valid total assignment remains after both complete
-
-#### Test 3 — wave state conflict
-- start one assignment transaction
-- concurrently lock the wave
-- verify assignment fails or is rejected consistently depending on timing and locking strategy
-
-A senior implementation usually benefits from integration tests with a real database, not just mocked repositories.
-
----
-
-## Interview questions you should be ready for after Iteration 2
-
-- Where exactly is the race condition in your Iteration 1 implementation?
-- Why is a transactional method still not enough by itself?
-- Why is `synchronized` not sufficient here?
-- Would you use optimistic or pessimistic locking, and why?
-- What rows do you lock during assignment?
-- In what order do you lock them, and why?
-- What database constraints do you rely on as guardrails?
-- How do you prevent double assignment of a shipment?
-- How do you prevent wave over-capacity under concurrent requests?
-- What HTTP response should the client get for concurrency conflicts?
-- Would your solution still work with two application instances?
-
----
-
-## Iteration 2 self-review checklist
-
-A good Iteration 2 implementation should satisfy most of the following:
-
-- The race conditions in Iteration 1 are explicitly understood and documented.
-- Assignment correctness no longer depends on check-then-act logic alone.
-- The transaction boundary remains in the service layer.
-- The chosen locking strategy is explicit and justified.
-- Critical rows are locked or versioned consistently.
-- Database constraints exist as a final correctness guardrail.
-- Lock acquisition order is stable and explained.
-- Concurrency failures are translated into meaningful API errors.
-- The design is correct across multiple JVM instances, not just one.
-- There are tests that actually exercise concurrent assignment conflicts.
-
----
-
-## Known limitations after Iteration 2
-
-Even after Iteration 2, the system is still not complete for a production-scale environment.
-
-Still out of scope:
-- asynchronous route preparation
-- bounded executors and background workers
-- retries, backoff, and backlog reprocessing
-- graceful shutdown and restart semantics
-- caching and summary optimization
-- observability and metrics
-- bulk throughput tuning
-- distributed workflows or messaging
-
-These belong to later iterations.
-
----
-
-## What a strong implementation trajectory looks like
-
-### After Iteration 1
-You can say:
-- the API is clean
-- the domain model is explicit
-- the service works functionally
-- validation and transactions are in place
-
-### After Iteration 2
-You can say:
-- the service remains correct under concurrent planner actions
-- important invariants are enforced transactionally and at the database layer
-- the implementation is moving from “works in happy path” to “safe under real operational pressure”
-
-That shift is exactly the kind of maturity interviewers look for.
+- `Assignment`
+
+### Additional persistence requirement for Step 3
+The implementation must introduce an additional persistence concept dedicated to **route-preparation workflow tracking**.
+
+This requirement exists because route preparation now has its own lifecycle that is separate from the basic dispatch-wave planning lifecycle. The system must be able to represent that route preparation was requested, is pending, is being processed, has completed, or has failed.
+
+### What this additional persistence concept must support
+The model introduced for route preparation must be able to represent at least:
+- the target dispatch wave
+- workflow status
+- creation/request timestamp
+- last update timestamp
+- retry-related state where relevant
+- failure visibility where relevant
+- result visibility where relevant
+
+### Important requirement boundary
+For this iteration, the README requires a persistence concept for **route-preparation workflow**. It does **not** require a full transport-execution route model unless the implementation explicitly needs that level of detail.
+
+That means:
+- a dedicated persistence model for route-preparation workflow is required
+- a rich first-class `Route` domain entity is optional in this iteration
+
+### Relationship expectations
+The implementation must clearly define how the route-preparation persistence concept relates to:
+- `DispatchWave`
+- shipment assignments already contained in that wave
+- route-preparation status visibility exposed through the API
+
+### Status ownership requirement
+The implementation must make clear which statuses belong to:
+- shipment lifecycle
+- dispatch-wave lifecycle
+- route-preparation lifecycle
+
+These lifecycles must not be collapsed into one ambiguous status model.
+
+### Documentation requirement
+The implementation README and code structure must make it clear:
+- which persistence objects exist in Step 3
+- why the new route-preparation persistence concept is needed
+- what business lifecycle it represents
+- whether a full `Route` entity is intentionally out of scope for this iteration
